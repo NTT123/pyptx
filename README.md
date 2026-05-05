@@ -229,7 +229,7 @@ Docs:
 
 ## Status
 
-0.1.0, pre-launch. Scope:
+0.1.1, pre-launch. Scope:
 
 - handwritten PTX DSL with full Hopper ISA (wgmma, TMA 2D/3D, mbarriers, cluster)
 - Blackwell `tcgen05` ISA (alloc, `mma.kind::f16/tf32/f8`, `ld`/`st`,
