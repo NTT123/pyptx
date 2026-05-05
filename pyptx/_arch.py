@@ -7,20 +7,21 @@ hard-coding a target.
 Mapping convention:
   * Compute capability 9.0 (Hopper H100/H200) → ``sm_90a``
   * Compute capability 10.0 (Blackwell datacenter B200/GB200) → ``sm_100a``
-  * Compute capability 12.0 (workstation Blackwell, RTX Pro 6000 / RTX 50xx) → ``sm_120``
-    The ``a`` suffix is reserved for the datacenter parts that ship the
-    ``tcgen05`` / ``wgmma`` feature sets; sm_120 doesn't have those, so
-    plain ``sm_120`` is the right target.
+  * Compute capability 12.0 (workstation Blackwell, RTX Pro 6000 / RTX 50xx) → ``sm_120a``
+    Starting with Compute Capability 9.0, NVIDIA exposes architecture-specific
+    feature targets with the ``a`` suffix; using the matching ``sm_120a``
+    target unlocks the complete feature set for a 12.0 device.
   * Compute capability <  9.0  → ``sm_{cc}``   (Ampere, Ada, Turing,
     Volta — no arch-specific feature suffix needed).
 
 Detection is best-effort. We try torch first (most users have it via
-``pyptx[torch]``), then cuda-python, and as a last resort raise with a
-clear message.
+``pyptx[torch]``), then cuda-python, then ``nvidia-smi``, and as a last
+resort raise with a clear message.
 """
 from __future__ import annotations
 
 import functools
+import subprocess
 
 
 @functools.lru_cache(maxsize=1)
@@ -30,7 +31,7 @@ def detect_arch() -> str:
     Examples:
         ``"sm_75"`` (T4),  ``"sm_80"`` (A100),  ``"sm_86"`` (RTX 30xx),
         ``"sm_89"`` (L40 / RTX 40xx),  ``"sm_90a"`` (H100, H200),
-        ``"sm_100a"`` (B200, GB200),  ``"sm_120"`` (RTX Pro 6000
+        ``"sm_100a"`` (B200, GB200),  ``"sm_120a"`` (RTX Pro 6000
         Blackwell, RTX 50xx).
 
     Cached after first call (the GPU on a process doesn't change).
@@ -47,16 +48,17 @@ def detect_arch() -> str:
         )
     major, minor = cc
     cap = major * 10 + minor
-    # Datacenter Hopper / Blackwell get the ``a`` suffix to unlock
-    # wgmma / tcgen05 / TMA. Workstation Blackwell (sm_120) doesn't
-    # ship those, so plain ``sm_120`` is correct.
-    if cap in (90, 100, 101):
+    # CC 9.0+ devices have architecture-specific feature targets. The
+    # matching ``a`` target is the right default for code generated for
+    # the exact local GPU; users can still request plain/family targets
+    # explicitly when they need wider binary compatibility.
+    if cap in (90, 100, 101, 103, 110, 120, 121):
         return f"sm_{cap}a"
     return f"sm_{cap}"
 
 
 def _query_compute_capability() -> tuple[int, int] | None:
-    """Try torch, then cuda-python. Returns (major, minor) or None."""
+    """Try torch, cuda-python, then nvidia-smi. Returns (major, minor) or None."""
     # torch path — fastest, most users have it.
     try:
         import torch  # type: ignore[import-not-found]
@@ -81,4 +83,37 @@ def _query_compute_capability() -> tuple[int, int] | None:
     except Exception:
         pass
 
+    cc = _query_compute_capability_from_nvidia_smi()
+    if cc is not None:
+        return cc
+
+    return None
+
+
+def _query_compute_capability_from_nvidia_smi() -> tuple[int, int] | None:
+    """Return the first GPU compute capability reported by nvidia-smi."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=compute_cap",
+                "--format=csv,noheader",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+
+    for line in result.stdout.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        try:
+            major_s, minor_s = value.split(".", 1)
+            return int(major_s), int(minor_s)
+        except Exception:
+            return None
     return None

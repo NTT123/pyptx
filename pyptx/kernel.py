@@ -318,14 +318,14 @@ class TmaDescriptorHandle:
 def _default_version_for_arch(arch: str) -> tuple[int, int]:
     """Return the default PTX ISA version for a target architecture.
 
-    Hopper examples in this repo were originally emitted as PTX 8.5.
-    Blackwell tcgen05 kernels need a newer PTX target than Hopper, but
-    CUDA 12.9 toolchains still top out at PTX 8.8. Workstation Blackwell
-    (sm_120, RTX Pro 6000) was added in CUDA 12.8 / PTX 8.7. Default to
-    the newest version that assembles on the current bring-up stack for
-    each arch instead of emitting PTX 9.2 unconditionally.
+    Defaults are the minimum PTX ISA version accepted by CUDA 13.0 ptxas
+    for each target family.
     """
-    if arch.startswith("sm_100") or arch.startswith("sm_101"):
+    if arch.startswith("sm_110"):
+        return (9, 0)
+    if arch.startswith("sm_100") or arch.startswith("sm_101") or arch.startswith("sm_103"):
+        return (8, 8)
+    if arch.startswith("sm_121"):
         return (8, 8)
     if arch.startswith("sm_12"):
         return (8, 7)

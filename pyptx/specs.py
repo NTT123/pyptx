@@ -309,8 +309,13 @@ def _wgmma_layout_for(operand: str, inner_dim: "Dim", dtype: PtxType) -> Layout:
         # figure out the concrete layout once the shape is bound.
         return Layout.ROW
 
-    elem_bytes = max(dtype.bits // 8, 1)
-    row_bytes = int(inner_dim) * elem_bytes
+    row_bits = int(inner_dim) * dtype.memory_bits
+    if row_bits % 8 != 0:
+        raise ValueError(
+            f"Cannot infer WGMMA TMA layout for {inner_dim} elements of "
+            f"{dtype}: row width is {row_bits} bits, not whole bytes"
+        )
+    row_bytes = row_bits // 8
     # For rows wider than 128 bytes (e.g. N=128 bf16 = 256 bytes),
     # clamp to SWIZZLE_128B — CUTLASS does the same. The TMA loads
     # 128-byte stripes and the swizzle wraps within each stripe.

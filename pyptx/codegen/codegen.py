@@ -38,6 +38,7 @@ from pyptx.ir.nodes import (
 )
 from pyptx.ir.types import StateSpace
 from pyptx.parser import parse
+from pyptx.types import _BY_NAME as _PTX_TYPE_REGISTRY
 
 
 # Python keywords that need trailing underscore when used as attributes
@@ -88,15 +89,9 @@ _SREG_NAMES = frozenset({
     "%total_smem_size", "%dynamic_smem_size",
 })
 
-# Type name → pyptx.types import name
-_TYPE_IMPORTS: dict[str, str] = {
-    "b8": "b8", "b16": "b16", "b32": "b32", "b64": "b64", "b128": "b128",
-    "u8": "u8", "u16": "u16", "u32": "u32", "u64": "u64",
-    "s8": "s8", "s16": "s16", "s32": "s32", "s64": "s64",
-    "f16": "f16", "f16x2": "f16x2", "bf16": "bf16", "bf16x2": "bf16x2",
-    "tf32": "tf32", "f32": "f32", "f64": "f64",
-    "e4m3": "e4m3", "e5m2": "e5m2", "pred": "pred",
-}
+# Type name → pyptx.types import name. Identity map keyed off the
+# PtxType registry so new types in pyptx.types are picked up automatically.
+_TYPE_IMPORTS: dict[str, str] = {name: name for name in _PTX_TYPE_REGISTRY}
 
 
 def ptx_to_python(source: str, *, sugar: bool = False, kernel_name: str = "matmul_kernel") -> str:

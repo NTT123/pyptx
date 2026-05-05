@@ -118,7 +118,8 @@ _TMA_SWIZZLE_BY_LAYOUT: dict[LayoutType, tuple[str, str | None]] = {
 
 def pick_gmma_layout(
     *,
-    elem_bytes: int,
+    elem_bytes: int | None = None,
+    elem_bits: int | None = None,
     m_or_n: int,
     k: int,
     major: Major,
@@ -127,7 +128,9 @@ def pick_gmma_layout(
 
     Args:
         elem_bytes: size of one matrix element in bytes (2 for bf16/f16,
-            4 for tf32/f32).
+            4 for tf32/f32). Kept for byte-sized element callers.
+        elem_bits: packed memory size of one matrix element in bits. Use
+            this for bit-packed formats such as b1.
         m_or_n: the M dimension (for operand A) or N (for operand B).
         k: the K dimension. For wgmma m64nNk16 bf16, always 16.
         major: ``Major.K`` for K-major (row-major A / col-major B) or
@@ -146,26 +149,48 @@ def pick_gmma_layout(
             canonical layouts at all — typically because the row width
             in bytes isn't one of {16, 32, 64, 128}.
     """
-    if elem_bytes <= 0:
-        raise ValueError(f"elem_bytes must be positive, got {elem_bytes}")
+    if elem_bits is None:
+        if elem_bytes is None:
+            raise TypeError("pick_gmma_layout requires elem_bytes or elem_bits")
+        if elem_bytes <= 0:
+            raise ValueError(f"elem_bytes must be positive, got {elem_bytes}")
+        elem_bits = elem_bytes * 8
+        elem_desc = f"elem_bytes={elem_bytes}"
+    else:
+        if elem_bits <= 0:
+            raise ValueError(f"elem_bits must be positive, got {elem_bits}")
+        if elem_bytes is not None and elem_bits != elem_bytes * 8:
+            raise ValueError(
+                f"elem_bytes={elem_bytes} disagrees with elem_bits={elem_bits}"
+            )
+        elem_desc = f"elem_bits={elem_bits}"
     if m_or_n <= 0 or k <= 0:
         raise ValueError(f"shape must be positive, got ({m_or_n}, {k})")
 
     if major == Major.K:
         # Row-major A: K is fast. The "row width" that determines the
-        # layout family is K * elem_bytes — that's the stride between
+        # layout family is K * element memory size — that's the stride between
         # consecutive M rows of the tile.
-        row_bytes = k * elem_bytes
-        return _build_k_major(elem_bytes, m_or_n, k, row_bytes)
+        row_bytes = _packed_row_bytes(k, elem_bits)
+        return _build_k_major(elem_desc, m_or_n, k, row_bytes)
     else:
-        # MN-major B: N is fast. Row width = N * elem_bytes — stride
+        # MN-major B: N is fast. Row width = N * element memory size — stride
         # between consecutive K rows.
-        row_bytes = m_or_n * elem_bytes
-        return _build_mn_major(elem_bytes, m_or_n, k, row_bytes)
+        row_bytes = _packed_row_bytes(m_or_n, elem_bits)
+        return _build_mn_major(elem_desc, m_or_n, k, row_bytes)
+
+
+def _packed_row_bytes(elements: int, elem_bits: int) -> int:
+    row_bits = elements * elem_bits
+    if row_bits % 8 != 0:
+        raise ValueError(
+            f"pyptx wgmma: packed row width {row_bits} bits is not byte-aligned"
+        )
+    return row_bits // 8
 
 
 def _build_k_major(
-    elem_bytes: int, m: int, k: int, row_bytes: int
+    elem_desc: str, m: int, k: int, row_bytes: int
 ) -> GmmaLayout:
     """K-major canonical layout for operand A (row-major MxK).
 
@@ -196,7 +221,7 @@ def _build_k_major(
     """
     if row_bytes not in _LAYOUT_BY_ROW_BYTES and row_bytes <= 128:
         raise ValueError(
-            f"pyptx wgmma: K-major tile with K={k}, elem_bytes={elem_bytes} "
+            f"pyptx wgmma: K-major tile with K={k}, {elem_desc} "
             f"has row width {row_bytes} bytes, which is not one of the "
             f"canonical GMMA row widths {list(_LAYOUT_BY_ROW_BYTES)}. Try "
             f"padding K or using a different dtype."
@@ -243,7 +268,7 @@ def _build_k_major(
 
 
 def _build_mn_major(
-    elem_bytes: int, n: int, k: int, row_bytes: int
+    elem_desc: str, n: int, k: int, row_bytes: int
 ) -> GmmaLayout:
     """MN-major canonical layout for operand B (row-major KxN).
 
@@ -271,7 +296,7 @@ def _build_mn_major(
     # access internally.
     if row_bytes not in _LAYOUT_BY_ROW_BYTES and row_bytes < 16:
         raise ValueError(
-            f"pyptx wgmma: MN-major tile with N={n}, elem_bytes={elem_bytes} "
+            f"pyptx wgmma: MN-major tile with N={n}, {elem_desc} "
             f"has row width {row_bytes} bytes, which is too narrow."
         )
     if k % 8 != 0:
@@ -338,23 +363,26 @@ def layout_for_a(*, dtype: Any, m: int, k: int) -> GmmaLayout:
         # la.tma_swizzle → "32B"
         # la.smem_swizzle → "32B"
     """
-    elem_bytes = _dtype_bytes(dtype)
-    return pick_gmma_layout(elem_bytes=elem_bytes, m_or_n=m, k=k, major=Major.K)
+    elem_bits = _dtype_memory_bits(dtype)
+    return pick_gmma_layout(elem_bits=elem_bits, m_or_n=m, k=k, major=Major.K)
 
 
 def layout_for_b(*, dtype: Any, k: int, n: int) -> GmmaLayout:
     """Canonical GMMA layout for operand B (row-major KxN, MN-major)."""
-    elem_bytes = _dtype_bytes(dtype)
-    return pick_gmma_layout(elem_bytes=elem_bytes, m_or_n=n, k=k, major=Major.MN)
+    elem_bits = _dtype_memory_bits(dtype)
+    return pick_gmma_layout(elem_bits=elem_bits, m_or_n=n, k=k, major=Major.MN)
 
 
-def _dtype_bytes(dtype: Any) -> int:
-    """Extract byte-size from a pyptx PtxType or similar."""
+def _dtype_memory_bits(dtype: Any) -> int:
+    """Extract packed memory bit-size from a pyptx PtxType or similar."""
+    if hasattr(dtype, "memory_bits"):
+        return dtype.memory_bits
+    if hasattr(dtype, "storage_bytes"):
+        return dtype.storage_bytes * 8
     if hasattr(dtype, "bits"):
-        bits = dtype.bits
-        return max(bits // 8, 1)
+        return max(dtype.bits, 8)
     if isinstance(dtype, int):
-        return dtype
+        return dtype * 8
     raise TypeError(
-        f"pyptx wgmma: cannot determine elem_bytes from {type(dtype).__name__}: {dtype!r}"
+        f"pyptx wgmma: cannot determine elem_bits from {type(dtype).__name__}: {dtype!r}"
     )

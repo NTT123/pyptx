@@ -45,6 +45,8 @@ class InstructionSpec:
         description: One-line description of the instruction.
         since_version: (major, minor) PTX version that introduced it.
         arch: Required architecture (e.g. 'sm_90a'), or None if universal.
+        broad: True if this is a permissive doc-coverage spec — narrow
+            specs are preferred when they match.
     """
 
     opcode: str
@@ -55,16 +57,28 @@ class InstructionSpec:
     description: str = ""
     since_version: tuple[int, int] = (1, 0)
     arch: str | None = None
+    broad: bool = False
 
 
 # ---------------------------------------------------------------------------
 # Type modifier groups (reused across many instructions)
 # ---------------------------------------------------------------------------
 
-_INT_TYPES = (".u8", ".u16", ".u32", ".u64", ".s8", ".s16", ".s32", ".s64")
-_FLOAT_TYPES = (".f16", ".f16x2", ".bf16", ".bf16x2", ".tf32", ".f32", ".f64")
+_INT_TYPES = (
+    ".u8", ".u16", ".u32", ".u64",
+    ".s8", ".s16", ".s32", ".s64",
+    ".u16x2", ".s16x2", ".u8x4", ".s8x4",
+)
+_FLOAT_TYPES = (
+    ".f16", ".f16x2", ".bf16", ".bf16x2", ".tf32", ".f32", ".f32x2", ".f64",
+)
 _BIT_TYPES = (".b8", ".b16", ".b32", ".b64", ".b128")
-_FP8_TYPES = (".e4m3", ".e5m2")
+_FP8_TYPES = (
+    ".e2m1", ".e2m3", ".e3m2", ".e4m3", ".e5m2", ".ue8m0",
+    ".e2m1x2", ".e2m3x2", ".e3m2x2", ".e4m3x2", ".e5m2x2", ".ue8m0x2",
+    ".e2m1x4", ".e2m3x4", ".e3m2x4", ".e4m3x4", ".e5m2x4",
+    ".s2f6x2",
+)
 _ALL_TYPES = _INT_TYPES + _FLOAT_TYPES + _BIT_TYPES + _FP8_TYPES + (".pred",)
 
 _TYPE = ModifierGroup("type", _ALL_TYPES, required=True)

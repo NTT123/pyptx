@@ -560,7 +560,7 @@ def synthesize_tma_descriptor(
         )
 
     rows, cols = shape
-    elem_bytes = max(dtype.bits // 8, 1)
+    elem_bytes = dtype.storage_bytes
 
     # Innermost-first convention: for a row-major (rows, cols) matrix,
     # the innermost (fastest-varying) dimension is "cols".
@@ -659,7 +659,7 @@ def synthesize_tma_descriptor_3d(
     """
     from cuda.bindings import driver
 
-    elem_bytes = max(dtype.bits // 8, 1)
+    elem_bytes = dtype.storage_bytes
     assert width % 64 == 0, f"width must be multiple of 64, got {width}"
 
     u64 = driver.cuuint64_t

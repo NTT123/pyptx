@@ -185,6 +185,15 @@ class MbarrierRef:
 _smem_counter = 0
 
 
+def _byte_addressable_element_bytes(dtype: PtxType) -> int:
+    if dtype.memory_bits % 8 != 0:
+        raise TypeError(
+            f"{dtype.name} shared-memory elements are {dtype.memory_bits}-bit packed "
+            "values and cannot be addressed one element at a time"
+        )
+    return dtype.memory_bits // 8
+
+
 def base(name: str | None = None):
     """Return a u32 register holding the base address of extern shared memory."""
     from pyptx._trace import get_ctx
@@ -266,7 +275,7 @@ def alloc(
         _smem_counter += 1
 
     element_count = math.prod(shape)
-    byte_count = element_count * (dtype.bits // 8)
+    byte_count = dtype.memory_size_bytes(element_count)
 
     if align is None:
         align = 128  # default alignment for shared memory
@@ -332,7 +341,7 @@ def wgmma_tile(
         raise ValueError(f"major must be 'K' or 'MN', got {major!r}")
 
     layout = pick_gmma_layout(
-        elem_bytes=max(dtype.bits // 8, 1),
+        elem_bits=dtype.memory_bits,
         m_or_n=m_or_n,
         k=k,
         major=major_enum,
@@ -378,7 +387,7 @@ def alloc_with_layout(
         _smem_counter += 1
 
     element_count = math.prod(shape)
-    byte_count = element_count * (dtype.bits // 8)
+    byte_count = dtype.memory_size_bytes(element_count)
 
     if align is None:
         align = 128
@@ -570,7 +579,7 @@ def apply_swizzle(logical_offset: "Reg", swizzle: str | None) -> "Reg":
 
 
 def _dtype_bytes(dtype: PtxType) -> int:
-    return max(dtype.bits // 8, 1)
+    return _byte_addressable_element_bytes(dtype)
 
 
 def _2d_byte_offset(alloc: "SharedAlloc", row, col):

@@ -1007,7 +1007,7 @@ class _Wgmma:
             m_or_n = int(shape[1])  # B's N dim is shape[1]
             k = int(shape[0])
         layout = pick_gmma_layout(
-            elem_bytes=max(dtype.bits // 8, 1),
+            elem_bits=dtype.memory_bits,
             m_or_n=m_or_n,
             k=k,
             major=major_enum,
@@ -2613,7 +2613,7 @@ def kloop(
 
     with if_(total >= unroll):
         main_left = reg_scalar(total.dtype)
-        _emit("mov", (total.dtype.ptx,), (main_left, rounded))
+        _emit("mov", (total.dtype.mov_ptx,), (main_left, rounded))
         keep_going = reg_scalar(pred_type)
         _setp_ne_zero(keep_going, main_left)
         with loop(loop_label, pred=keep_going):
@@ -2929,8 +2929,8 @@ def pipe(src: Reg) -> _Pipe:
 # -- Convenience: common instructions directly on the module ----------------
 
 def mov(dtype: PtxType, dst: Reg, src: Any, *, pred: Reg | NegPred | None = None) -> None:
-    """Emit mov.{dtype} dst, src;"""
-    _emit("mov", (dtype.ptx,), (dst, src), pred=pred)
+    """Emit a legal storage mov into ``dst``."""
+    _emit("mov", (dtype.mov_ptx,), (dst, src), pred=pred)
 
 def add(dtype: PtxType, dst: Reg, a: Any, b: Any, *, pred: Reg | NegPred | None = None) -> None:
     """Emit add.{dtype} dst, a, b;"""

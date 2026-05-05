@@ -346,7 +346,7 @@ class RegArray:
 
         # Fallback: emit a mov
         dst = Reg(dst_name, self._dtype)
-        bits = self._dtype.bits
+        bits = self._dtype.storage_bits
         mod = f".b{bits}" if bits in (16, 32, 64, 128) else f".b32"
         ctx.emit(Instruction(
             opcode="mov",
@@ -384,12 +384,16 @@ class RegArray:
 # Map PtxType name to register prefix convention
 _REG_PREFIX: dict[str, str] = {
     "pred": "%p",
-    "b16": "%rs", "b32": "%r", "b64": "%rd", "b128": "%rq",
-    "u16": "%rs", "u32": "%r", "u64": "%rd",
-    "s16": "%rs", "s32": "%r", "s64": "%rd",
+    "b1": "%b", "b8": "%b", "b16": "%rs", "b32": "%r", "b64": "%rd", "b128": "%rq",
+    "u8": "%b", "u16": "%rs", "u16x2": "%r", "u8x4": "%r", "u32": "%r", "u64": "%rd",
+    "s8": "%b", "s16": "%rs", "s16x2": "%r", "s8x4": "%r", "s32": "%r", "s64": "%rd",
     "f16": "%h", "f16x2": "%hh", "bf16": "%h", "bf16x2": "%hh",
-    "f32": "%f", "f64": "%fd",
-    "e4m3": "%b", "e5m2": "%b",
+    "f32": "%f", "f32x2": "%fd", "f64": "%fd",
+    "e2m1": "%b", "e2m3": "%b", "e3m2": "%b", "e4m3": "%b", "e5m2": "%b", "ue8m0": "%b",
+    "e2m1x2": "%b", "e2m3x2": "%rs", "e3m2x2": "%rs",
+    "e4m3x2": "%rs", "e5m2x2": "%rs", "ue8m0x2": "%rs",
+    "e2m1x4": "%rs", "e2m3x4": "%r", "e3m2x4": "%r",
+    "e4m3x4": "%r", "e5m2x4": "%r", "s2f6x2": "%rs",
     "tf32": "%f",
 }
 
@@ -448,7 +452,7 @@ def array(dtype: PtxType, count: int, name: str | None = None) -> RegArray:
             arr_idx = ctx.alloc_reg_name(prefix + "_arr")
             base = f"{prefix}arr{arr_idx}_"
 
-    scalar_type = ScalarType.from_ptx(dtype.ptx)
+    scalar_type = ScalarType.from_ptx(dtype.storage_ptx)
     ctx.emit_reg_decl(RegDecl(type=scalar_type, name=base, count=count))
     return RegArray(base, count, dtype)
 
@@ -460,8 +464,8 @@ def scalar(
 ) -> Reg:
     """Allocate a single register, optionally initialized.
 
-    Emits: .reg .{dtype} %name;
-    If init is given, also emits: mov.{dtype} %name, init;
+    Emits: .reg .{storage dtype} %name;
+    If init is given, also emits a legal storage ``mov`` into %name.
 
     Predicate registers share a single bulk ``.reg .pred %p<N>;``
     declaration (grown as needed) so they don't collide with
@@ -499,7 +503,7 @@ def scalar(
         idx = int(reg_name[2:])
         _ensure_pred_decl(ctx, idx + 1)
     else:
-        scalar_type = ScalarType.from_ptx(dtype.ptx)
+        scalar_type = ScalarType.from_ptx(dtype.storage_ptx)
         ctx.emit_reg_decl(RegDecl(type=scalar_type, name=reg_name))
 
     reg = Reg(reg_name, dtype)
@@ -514,7 +518,7 @@ def scalar(
             init_text = str(init)
         ctx.emit(Instruction(
             opcode="mov",
-            modifiers=(dtype.ptx,),
+            modifiers=(dtype.mov_ptx,),
             operands=(RegisterOperand(reg_name), ImmediateOperand(init_text)),
         ))
 
@@ -537,7 +541,7 @@ def from_(src: Any, dtype: PtxType) -> Reg:
     rhs = LabelOperand(src) if isinstance(src, str) else _to_reg_operand(src)
     ctx.emit(Instruction(
         opcode="mov",
-        modifiers=(dtype.ptx,),
+        modifiers=(dtype.mov_ptx,),
         operands=(RegisterOperand(out.name), rhs),
     ))
     return out
@@ -1120,7 +1124,7 @@ def _emit_setp(cmp_op: str, left: Reg, right: Any) -> Reg:
         staged = scalar(left.dtype)
         ctx.emit(Instruction(
             opcode="mov",
-            modifiers=(left.dtype.ptx,),
+            modifiers=(left.dtype.mov_ptx,),
             operands=(
                 RegisterOperand(staged.name),
                 RegisterOperand(left_name),
@@ -1205,6 +1209,7 @@ def _to_reg_operand(val: Any) -> RegisterOperand | ImmediateOperand:
 
 # Map PtxType name -> auto-alloc register prefix (distinct from _REG_PREFIX).
 _AUTO_PREFIXES: dict[str, str] = {
+    "b1":     "%ab1",
     "b8":     "%ab",
     "b16":    "%ah",
     "b32":    "%ar",
@@ -1212,10 +1217,14 @@ _AUTO_PREFIXES: dict[str, str] = {
     "b128":   "%aq",
     "u8":     "%au8",
     "u16":    "%au16",
+    "u16x2":  "%au16x2",
+    "u8x4":   "%au8x4",
     "u32":    "%au",
     "u64":    "%aud",
     "s8":     "%as8",
     "s16":    "%as16",
+    "s16x2":  "%as16x2",
+    "s8x4":   "%as8x4",
     "s32":    "%as",
     "s64":    "%asd",
     "f16":    "%af16",
@@ -1224,9 +1233,26 @@ _AUTO_PREFIXES: dict[str, str] = {
     "bf16x2": "%abfx2",
     "tf32":   "%atf",
     "f32":    "%af",
+    "f32x2":  "%afx2",
     "f64":    "%afd",
+    "e2m1":   "%ae21",
+    "e2m3":   "%ae23",
+    "e3m2":   "%ae32",
     "e4m3":   "%ae4",
     "e5m2":   "%ae5",
+    "ue8m0":  "%aue8",
+    "e2m1x2": "%ae21x2",
+    "e2m3x2": "%ae23x2",
+    "e3m2x2": "%ae32x2",
+    "e4m3x2": "%ae4x2",
+    "e5m2x2": "%ae5x2",
+    "ue8m0x2": "%aue8x2",
+    "e2m1x4": "%ae21x4",
+    "e2m3x4": "%ae23x4",
+    "e3m2x4": "%ae32x4",
+    "e4m3x4": "%ae4x4",
+    "e5m2x4": "%ae5x4",
+    "s2f6x2": "%as2f6x2",
     "pred":   "%ap",
 }
 
@@ -1262,7 +1288,7 @@ def alloc(dtype: PtxType) -> Reg:
     idx = ctx.alloc_reg_name(prefix)
     reg_name = f"{prefix}{idx}"
 
-    scalar_type = ScalarType.from_ptx(dtype.ptx)
+    scalar_type = ScalarType.from_ptx(dtype.storage_ptx)
     ctx.emit_reg_decl(RegDecl(type=scalar_type, name=reg_name))
     return Reg(reg_name, dtype)
 
@@ -1290,6 +1316,6 @@ def alloc_array(dtype: PtxType, count: int) -> RegArray:
     arr_idx = ctx.alloc_reg_name(prefix + "_arr")
     base = f"{prefix}arr{arr_idx}_"
 
-    scalar_type = ScalarType.from_ptx(dtype.ptx)
+    scalar_type = ScalarType.from_ptx(dtype.storage_ptx)
     ctx.emit_reg_decl(RegDecl(type=scalar_type, name=base, count=count))
     return RegArray(base, count, dtype)
